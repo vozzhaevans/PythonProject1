@@ -5,7 +5,6 @@ import ssl
 import certifi
 import urllib.request
 
-
 def fix_ssl_before_import():
     try:
         ssl_context = ssl.create_default_context(cafile=certifi.where())
