@@ -1,412 +1,261 @@
-
 import flet as ft
 import threading
 import os
 import sys
+import json
 import math
+from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from cian_parser import CianParser
-
+from monitor import CianMonitor
+from excel_exporter import export_results_to_excel
 
 class CianParserGUI:
 
     def __init__(self):
         self.parser = None
+        self.monitor = CianMonitor()
         self.parsing_thread = None
         self.is_parsing = False
         self.current_results = []
         self.filtered_results = []
         self.current_page = 0
         self.items_per_page = 5
+        self.settings_file = "monitor_settings.json"
+
+    def load_settings(self):
+        if os.path.exists(self.settings_file):
+            try:
+                with open(self.settings_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {}
+
+    def save_settings(self):
+        settings = {
+            "email_to": self.monitor_email.value.strip(),
+            "email_from": self.monitor_from_email.value.strip(),
+            "notify_always": self.notify_always_checkbox.value,
+            "interval_min": int(self.monitor_interval.value) if self.monitor_interval.value.strip() else 60
+        }
+        try:
+            with open(self.settings_file, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, ensure_ascii=False, indent=2)
+            self.add_log(" Настройки мониторинга сохранены")
+        except Exception as e:
+            self.add_log(f"Ошибка сохранения настроек: {e}", True)
 
     def main(self, page: ft.Page):
-        page.title = "Парсер ЦИАН - Аренда квартир"
+        page.title = "Парсер ЦИАН - Аренда квартир + Мониторинг"
         page.theme_mode = ft.ThemeMode.LIGHT
-        page.window_width = 1400
-        page.window_height = 900
-        page.window_min_width = 1000
-        page.window_min_height = 700
+        page.window_width = 1480
+        page.window_height = 1000
+        page.window_min_width = 1150
+        page.window_min_height = 780
 
         colors = {
-            "grey": ft.Colors.GREY if hasattr(ft, 'Colors') else "grey",
-            "red": ft.Colors.RED if hasattr(ft, 'Colors') else "red",
-            "green": ft.Colors.GREEN if hasattr(ft, 'Colors') else "green",
-            "blue": ft.Colors.BLUE if hasattr(ft, 'Colors') else "blue",
-            "grey_800": ft.Colors.GREY_800 if hasattr(ft, 'Colors') else "grey-800",
-            "grey_300": ft.Colors.GREY_300 if hasattr(ft, 'Colors') else "grey-300",
-            "grey_200": ft.Colors.GREY_200 if hasattr(ft, 'Colors') else "grey-200",
-            "grey_400": ft.Colors.GREY_400 if hasattr(ft, 'Colors') else "grey-400",
+            "grey": ft.Colors.GREY,
+            "red": ft.Colors.RED,
+            "green": ft.Colors.GREEN,
+            "blue": ft.Colors.BLUE,
+            "grey_800": ft.Colors.GREY_800,
+            "grey_300": ft.Colors.GREY_300,
+            "grey_200": ft.Colors.GREY_200,
+            "grey_400": ft.Colors.GREY_400,
         }
 
+        settings = self.load_settings()
+
         self.status_text = ft.Text("Готов к работе", size=12, color=colors["grey"])
-        self.progress_bar = ft.ProgressBar(width=300, visible=False)
-        self.log_area = ft.ListView(
-            expand=True,
-            spacing=5,
-            auto_scroll=True
-        )
+        self.progress_bar = ft.ProgressBar(width=320, visible=False)
+        self.log_area = ft.ListView(expand=True, spacing=5, auto_scroll=True)
 
-        self.min_price_field = ft.TextField(
-            label="Мин. цена",
-            width=150,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            hint_text="введите сумму",
-            dense=False,
-            content_padding=ft.padding.symmetric(horizontal=12, vertical=12),
-            border_radius=8,
-            text_size=14
-        )
-
-        self.max_price_field = ft.TextField(
-            label="Макс. цена",
-            width=150,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            hint_text="введите сумму",
-            dense=False,
-            content_padding=ft.padding.symmetric(horizontal=12, vertical=12),
-            border_radius=8,
-            text_size=14
-        )
-
-        self.rooms_filter = ft.Dropdown(
-            label="Количество комнат",
-            width=170,
-            options=[
-                ft.dropdown.Option("0", "Все комнаты"),
-                ft.dropdown.Option("1", "1 комната"),
-                ft.dropdown.Option("2", "2 комнаты"),
-                ft.dropdown.Option("3", "3 комнаты"),
-                ft.dropdown.Option("4", "4 комнаты и более"),
-            ],
-            value="0",
-            dense=False,
-            content_padding=ft.padding.symmetric(horizontal=12, vertical=12),
-            text_size=14
-        )
-
-        self.min_area_field = ft.TextField(
-            label="Мин. площадь",
-            width=150,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            hint_text="м² от",
-            dense=False,
-            content_padding=ft.padding.symmetric(horizontal=12, vertical=12),
-            border_radius=8,
-            text_size=14
-        )
-
-        max_scrolls_field = ft.TextField(
-            label="Количество прокруток",
-            value="10",
-            width=150,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            dense=False,
-            content_padding=ft.padding.symmetric(horizontal=12, vertical=12),
-            border_radius=8,
-            text_size=14
-        )
-
-        max_results_field = ft.TextField(
-            label="Макс. объявлений",
-            value="30",
-            width=150,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            dense=False,
-            content_padding=ft.padding.symmetric(horizontal=12, vertical=12),
-            border_radius=8,
-            text_size=14
-        )
+        self.min_price_field = ft.TextField(label="Мин. цена", width=150, keyboard_type=ft.KeyboardType.NUMBER, hint_text="сумма")
+        self.max_price_field = ft.TextField(label="Макс. цена", width=150, keyboard_type=ft.KeyboardType.NUMBER, hint_text="сумма")
+        self.rooms_filter = ft.Dropdown(label="Комнаты", width=170, value="0", options=[
+            ft.dropdown.Option("0", "Все"), ft.dropdown.Option("1", "1"),
+            ft.dropdown.Option("2", "2"), ft.dropdown.Option("3", "3"),
+            ft.dropdown.Option("4", "4+")
+        ])
+        self.min_area_field = ft.TextField(label="Мин. площадь (м²)", width=160, keyboard_type=ft.KeyboardType.NUMBER)
 
         url_field = ft.TextField(
-            label="URL для парсинга",
-            value="https://ekb.cian.ru/snyat-kvartiru/",
-            width=450,
-            hint_text="Введите URL страницы ЦИАН",
-            dense=False,
-            content_padding=ft.padding.symmetric(horizontal=12, vertical=12),
-            border_radius=8,
-            text_size=14
+            label="URL для парсинга", value="https://ekb.cian.ru/snyat-kvartiru/",
+            width=500, dense=False
+        )
+        max_scrolls_field = ft.TextField(label="Прокруток", value="1", width=130)
+        max_results_field = ft.TextField(label="Макс. объявлений", value="30", width=160)
+
+        self.excel_prefix_field = ft.TextField(label="Префикс Excel", value="Cian_parser", width=180)
+        self.include_datetime_checkbox = ft.Checkbox(label="Дата+время в имени", value=True)
+
+        self.monitor_interval = ft.TextField(
+            label="Интервал (мин)", value=str(settings.get("interval_min", 60)), width=130,
+            keyboard_type=ft.KeyboardType.NUMBER
         )
 
-        self.excel_prefix_field = ft.TextField(
-            label="Префикс имени Excel",
-            value="Cian_parser",
-            width=180,
-            dense=False,
-            content_padding=ft.padding.symmetric(horizontal=12, vertical=12),
-            border_radius=8,
-            text_size=14
+        self.monitor_email = ft.TextField(
+            label="Email получателя", value=settings.get("email_to", ""), width=260,
+            hint_text="your@gmail.com"
         )
 
-        self.include_datetime_checkbox = ft.Checkbox(
-            label="Добавить дату и время в название",
-            value=True
-            # label_size=13 удалён — не поддерживается в твоей версии Flet
+        self.monitor_from_email = ft.TextField(
+            label="Gmail отправитель", value=settings.get("email_from", ""), width=240,
+            hint_text="your@gmail.com"
         )
 
-        start_button = ft.ElevatedButton(
-            "Старт",
-            icon=ft.Icons.PLAY_ARROW,
-            on_click=lambda e: self.start_parsing(
-                page,
-                url_field.value,
-                int(max_scrolls_field.value),
-                int(max_results_field.value)
-            ),
-            style=ft.ButtonStyle(padding=12),
-            width=100
+        self.monitor_password = ft.TextField(
+            label="Пароль приложения Gmail", width=190, password=True, can_reveal_password=True,
+            hint_text="16 символов"
         )
 
-        stop_button = ft.ElevatedButton(
-            "Стоп",
-            icon=ft.Icons.STOP,
-            color=colors["red"],
-            on_click=self.stop_parsing,
-            disabled=True,
-            style=ft.ButtonStyle(padding=12),
-            width=100
+        self.notify_always_checkbox = ft.Checkbox(
+            label="Уведомлять всегда (даже без изменений)",
+            value=settings.get("notify_always", False)
         )
 
-        save_text_button = ft.ElevatedButton(
-            "Сохранить TXT",
-            icon=ft.Icons.TEXT_FIELDS,
-            on_click=lambda e: self.save_results("txt"),
-            disabled=True,
-            style=ft.ButtonStyle(padding=12)
+        start_button = ft.ElevatedButton("Старт", icon=ft.Icons.PLAY_ARROW, width=110,
+                                         on_click=lambda e: self.start_parsing(page, url_field.value,
+                                              int(max_scrolls_field.value), int(max_results_field.value)))
+
+        stop_button = ft.ElevatedButton("Стоп", icon=ft.Icons.STOP, color=colors["red"], width=110,
+                                        on_click=self.stop_parsing, disabled=True)
+
+        save_text_button = ft.ElevatedButton("TXT", icon=ft.Icons.TEXT_FIELDS,
+                                             on_click=lambda e: self.save_results("txt"), disabled=True)
+        save_json_button = ft.ElevatedButton("JSON", icon=ft.Icons.CODE,
+                                             on_click=lambda e: self.save_results("json"), disabled=True)
+        save_excel_button = ft.ElevatedButton("Excel", icon=ft.Icons.TABLE_CHART,
+                                              on_click=lambda e: self.save_results("excel"), disabled=True, width=120)
+
+        save_monitor_settings_btn = ft.ElevatedButton(
+            "Сохранить настройки", icon=ft.Icons.SAVE,
+            on_click=lambda e: self.save_settings()
         )
 
-        save_json_button = ft.ElevatedButton(
-            "Сохранить JSON",
-            icon=ft.Icons.CODE,
-            on_click=lambda e: self.save_results("json"),
-            disabled=True,
-            style=ft.ButtonStyle(padding=12)
+        monitor_start_btn = ft.ElevatedButton(
+            "Запустить мониторинг", icon=ft.Icons.SCHEDULE, color=ft.Colors.GREEN_700,
+            on_click=self.start_monitoring
         )
 
-        save_excel_button = ft.ElevatedButton(
-            "Сохранить Excel",
-            icon=ft.Icons.TABLE_CHART,
-            on_click=lambda e: self.save_results("excel"),
-            disabled=True,
-            style=ft.ButtonStyle(padding=12),
-            width=130
+        monitor_stop_btn = ft.ElevatedButton(
+            "Остановить мониторинг", icon=ft.Icons.STOP, color=colors["red"],
+            on_click=self.stop_monitoring, disabled=True
         )
 
-        clear_log_button = ft.IconButton(
-            icon=ft.Icons.CLEAR_ALL,
-            tooltip="Очистить лог",
-            icon_size=24,
-            on_click=lambda e: self.log_area.controls.clear() or page.update()
-        )
+        clear_log_button = ft.IconButton(icon=ft.Icons.CLEAR_ALL, tooltip="Очистить лог",
+                                         on_click=lambda e: (self.log_area.controls.clear(), page.update()))
 
-        apply_filters_button = ft.ElevatedButton(
-            "Применить фильтры",
-            icon=ft.Icons.FILTER_LIST,
-            on_click=lambda e: self.apply_filters(),
-            style=ft.ButtonStyle(padding=12)
-        )
+        apply_filters_button = ft.ElevatedButton("Применить фильтры", icon=ft.Icons.FILTER_LIST,
+                                                 on_click=lambda e: self.apply_filters())
+        reset_filters_button = ft.OutlinedButton("Сбросить", icon=ft.Icons.CLEAR,
+                                                 on_click=lambda e: self.reset_filters())
 
-        reset_filters_button = ft.OutlinedButton(
-            "Сбросить",
-            icon=ft.Icons.CLEAR,
-            on_click=lambda e: self.reset_filters(),
-            style=ft.ButtonStyle(padding=12)
-        )
-
-        self.top_panel_height = 280
-        self.top_panel_container = ft.Container(
+        top_panel = ft.Container(
             content=ft.Column([
-                ft.Container(
-                    content=ft.Row([
-                        url_field,
-                        max_scrolls_field,
-                        max_results_field,
-                        start_button,
-                        stop_button,
-                    ], spacing=12, wrap=True, alignment=ft.MainAxisAlignment.START),
-                    margin=ft.margin.only(bottom=8)
-                ),
-                ft.Container(
-                    content=ft.Row([
-                        ft.Text("Фильтры:", size=14, weight=ft.FontWeight.BOLD),
-                        self.min_price_field,
-                        self.max_price_field,
-                        self.rooms_filter,
-                        self.min_area_field,
-                        apply_filters_button,
-                        reset_filters_button,
-                    ], spacing=12, wrap=True, alignment=ft.MainAxisAlignment.START),
-                    margin=ft.margin.only(bottom=8)
-                ),
-                ft.Container(
-                    content=ft.Row([
-                        save_text_button,
-                        save_json_button,
-                        save_excel_button,
-                        ft.VerticalDivider(width=1, color=colors["grey_400"]),
-                        self.excel_prefix_field,
-                        self.include_datetime_checkbox,
-                        clear_log_button,
-                    ], spacing=12, wrap=True),
-                    margin=ft.margin.only(bottom=8)
-                ),
+                ft.Row([url_field, max_scrolls_field, max_results_field, start_button, stop_button], spacing=10, wrap=True),
+
+                ft.Row([ft.Text("Фильтры:", weight=ft.FontWeight.BOLD, size=14),
+                        self.min_price_field, self.max_price_field, self.rooms_filter,
+                        self.min_area_field, apply_filters_button, reset_filters_button], spacing=10, wrap=True),
+
                 ft.Row([
-                    self.status_text,
-                    self.progress_bar,
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ], spacing=10),
-            height=self.top_panel_height,
-            margin=ft.margin.only(bottom=8),
-            padding=ft.padding.all(12),
+                    save_text_button, save_json_button, save_excel_button,
+                    self.excel_prefix_field, self.include_datetime_checkbox,
+                    clear_log_button,
+                    ft.VerticalDivider(),
+                    ft.Text("Мониторинг:", weight=ft.FontWeight.BOLD),
+                    self.monitor_interval,
+                    save_monitor_settings_btn
+                ], spacing=10, wrap=True),
+
+                ft.Row([
+                    self.monitor_email, self.monitor_from_email, self.monitor_password,
+                    self.notify_always_checkbox, monitor_start_btn, monitor_stop_btn
+                ], spacing=10, wrap=True),
+
+                ft.Row([self.status_text, self.progress_bar], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ], spacing=12),
+            padding=14,
             bgcolor=colors["grey_200"],
             border_radius=12
         )
 
-        top_splitter = ft.Container(height=2, margin=ft.margin.symmetric(vertical=5),
-                                    bgcolor=colors["grey_300"], border_radius=1)
-
-        self.results_list = ft.ListView(expand=True, spacing=10, auto_scroll=False)
-
+        self.results_list = ft.ListView(expand=True, spacing=10)
         self.pagination_row = ft.Row([], alignment=ft.MainAxisAlignment.CENTER)
 
         results_container = ft.Container(
             content=ft.Column([
-                ft.Row([
-                    ft.Text("Результаты парсинга", size=14, weight=ft.FontWeight.BOLD),
-                    ft.Text("", size=11, color=colors["green"], key="results_count"),
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ft.Container(
-                    content=self.results_list,
-                    expand=True,
-                    border=ft.border.all(1, colors["grey_300"]),
-                    border_radius=8,
-                    padding=5
-                ),
-                self.pagination_row,
-            ], spacing=8, expand=True),
-            expand=True,
-            margin=ft.margin.only(bottom=5)
+                ft.Row([ft.Text("Результаты", size=15, weight=ft.FontWeight.BOLD),
+                        ft.Text("", color=colors["green"], key="count")],
+                       alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Container(self.results_list, expand=True, border=ft.Border.all(1, colors["grey_300"]), border_radius=8, padding=6),
+                self.pagination_row
+            ], expand=True),
+            expand=3
         )
 
-        self.log_container = ft.Container(
+        log_container = ft.Container(
             content=ft.Column([
-                ft.Text("Лог парсинга", size=14, weight=ft.FontWeight.BOLD),
-                ft.Container(
-                    content=self.log_area,
-                    expand=True,
-                    border=ft.border.all(1, colors["grey_300"]),
-                    border_radius=8,
-                    padding=5
-                ),
-            ], spacing=8, expand=True),
-            height=150,
-            margin=ft.margin.only(top=5),
-            padding=ft.padding.all(12),
-            bgcolor=colors["grey_200"],
-            border_radius=12
+                ft.Text("Лог", size=14, weight=ft.FontWeight.BOLD),
+                ft.Container(self.log_area, expand=True, border=ft.Border.all(1, colors["grey_300"]), border_radius=8, padding=8)
+            ], expand=True),
+            expand=2, height=200, padding=10, bgcolor=colors["grey_200"], border_radius=12
         )
 
-        bottom_splitter = ft.Container(height=2, margin=ft.margin.symmetric(vertical=5),
-                                       bgcolor=colors["grey_300"], border_radius=1)
+        main_view = ft.Column([
+            top_panel,
+            ft.Row([results_container, log_container], expand=True, spacing=12)
+        ], expand=True, spacing=10)
 
-        main_column = ft.Column([
-            self.top_panel_container,
-            top_splitter,
-            ft.Container(
-                content=ft.Row([
-                    ft.Container(content=results_container, expand=3, margin=ft.margin.only(right=5)),
-                    ft.Container(
-                        content=ft.Column([bottom_splitter, self.log_container], spacing=0),
-                        expand=2,
-                        margin=ft.margin.only(left=5)
-                    ),
-                ], expand=True, spacing=10),
-                expand=True
-            ),
-        ], spacing=0, expand=True)
-
-        page.add(main_column)
+        page.add(main_view)
 
         self.start_button = start_button
         self.stop_button = stop_button
         self.save_text_button = save_text_button
         self.save_json_button = save_json_button
         self.save_excel_button = save_excel_button
-        self.max_scrolls_field = max_scrolls_field
-        self.max_results_field = max_results_field
+        self.monitor_start_btn = monitor_start_btn
+        self.monitor_stop_btn = monitor_stop_btn
         self.url_field = url_field
         self.page = page
         self.colors = colors
-        self.apply_filters_button = apply_filters_button
-        self.reset_filters_button = reset_filters_button
 
         self.add_log("Интерфейс загружен")
-        self.add_log("Готов к запуску парсинга")
-
+        self.add_log("Настройки мониторинга загружены из файла")
 
     def add_log(self, message, is_error=False):
-        from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
         color = self.colors["red"] if is_error else self.colors["grey_800"]
-        self.log_area.controls.append(
-            ft.Text(f"[{timestamp}] {message}", color=color, size=11)
-        )
+        self.log_area.controls.append(ft.Text(f"[{timestamp}] {message}", color=color, size=12))
         self.page.update()
 
     def update_progress(self, message, progress):
         self.status_text.value = message
+        self.progress_bar.visible = progress >= 0
         if progress >= 0:
-            self.progress_bar.visible = True
             self.progress_bar.value = progress / 100
-        else:
-            self.progress_bar.visible = False
         self.page.update()
-
-    def extract_float_from_string(self, text):
-        if not text:
-            return 0
-        try:
-            import re
-            match = re.search(r'(\d+[.,]?\d*)', text)
-            if match:
-                num_str = match.group(1).replace(',', '.')
-                num = float(num_str)
-                return math.floor(num)
-            return 0
-        except:
-            return 0
 
     def apply_filters(self):
         if not self.current_results:
             self.add_log("Нет результатов для фильтрации", True)
             return
-
-        min_price_str = self.min_price_field.value
-        max_price_str = self.max_price_field.value
+        min_price = int(self.min_price_field.value) if self.min_price_field.value.strip() else 0
+        max_price = int(self.max_price_field.value) if self.max_price_field.value.strip() else float('inf')
         rooms_filter = int(self.rooms_filter.value) if self.rooms_filter.value != "0" else 0
-        min_area_str = self.min_area_field.value
-
-        min_price = int(min_price_str) if min_price_str and min_price_str.strip() else 0
-        max_price = int(max_price_str) if max_price_str and max_price_str.strip() else float('inf')
-        min_area = int(min_area_str) if min_area_str and min_area_str.strip() else 0
-
-        filters_applied = []
-        if min_price > 0: filters_applied.append(f"цена от {min_price}")
-        if max_price != float('inf'): filters_applied.append(f"цена до {max_price}")
-        if rooms_filter > 0: filters_applied.append(f"{rooms_filter} комн.")
-        if min_area > 0: filters_applied.append(f"площадь от {min_area} м²")
-
-        self.add_log(f"Применяем фильтры: {', '.join(filters_applied) if filters_applied else 'все объявления'}")
+        min_area = int(self.min_area_field.value) if self.min_area_field.value.strip() else 0
 
         filtered = []
         for item in self.current_results:
             price_match = True
-            if item['price'] != "Цена не указана":
+            if item.get('price') != "Цена не указана":
                 try:
                     price = int(''.join(filter(str.isdigit, item['price'])))
-                    if price < min_price or price > max_price:
+                    if price < min_price or (max_price != float('inf') and price > max_price):
                         price_match = False
                 except:
                     price_match = False
@@ -414,11 +263,9 @@ class CianParserGUI:
             rooms_match = True
             if rooms_filter > 0:
                 if rooms_filter == 4:
-                    if item['rooms'] < 4:
-                        rooms_match = False
-                else:
-                    if item['rooms'] != rooms_filter:
-                        rooms_match = False
+                    if item.get('rooms', 0) < 4: rooms_match = False
+                elif item.get('rooms', 0) != rooms_filter:
+                    rooms_match = False
 
             area_match = True
             if min_area > 0:
@@ -432,11 +279,7 @@ class CianParserGUI:
         self.filtered_results = filtered
         self.current_page = 0
         self.update_results_display()
-
-        if filtered:
-            self.add_log(f" Применены фильтры. Найдено: {len(filtered)} из {len(self.current_results)}")
-        else:
-            self.add_log(f" По фильтрам ничего не найдено. Всего: {len(self.current_results)}")
+        self.add_log(f"Применены фильтры. Найдено: {len(filtered)}")
 
     def reset_filters(self):
         self.min_price_field.value = ""
@@ -446,13 +289,22 @@ class CianParserGUI:
         self.filtered_results = self.current_results.copy()
         self.current_page = 0
         self.update_results_display()
-        self.add_log("Фильтры сброшены. Показаны все объявления")
-        self.page.update()
+        self.add_log("Фильтры сброшены")
+
+    def extract_float_from_string(self, text):
+        if not text: return 0
+        try:
+            import re
+            match = re.search(r'(\d+[.,]?\d*)', text)
+            if match:
+                return math.floor(float(match.group(1).replace(',', '.')))
+            return 0
+        except:
+            return 0
 
     def update_results_display(self):
         self.results_list.controls.clear()
         results_to_show = self.filtered_results if self.filtered_results else self.current_results
-
         start_idx = self.current_page * self.items_per_page
         end_idx = min(start_idx + self.items_per_page, len(results_to_show))
 
@@ -461,11 +313,11 @@ class CianParserGUI:
 
         total_pages = (len(results_to_show) + self.items_per_page - 1) // self.items_per_page
         self.pagination_row.controls = [
-            ft.IconButton(icon=ft.Icons.CHEVRON_LEFT, on_click=lambda e: self.prev_page(),
-                          disabled=self.current_page == 0, icon_size=20),
-            ft.Text(f"Страница {self.current_page + 1} из {max(1, total_pages)}", size=12),
-            ft.IconButton(icon=ft.Icons.CHEVRON_RIGHT, on_click=lambda e: self.next_page(),
-                          disabled=self.current_page >= total_pages - 1, icon_size=20),
+            ft.IconButton(icon=ft.Icons.CHEVRON_LEFT, on_click=lambda _: self.prev_page(),
+                          disabled=self.current_page == 0),
+            ft.Text(f"{self.current_page + 1} / {max(1, total_pages)}"),
+            ft.IconButton(icon=ft.Icons.CHEVRON_RIGHT, on_click=lambda _: self.next_page(),
+                          disabled=self.current_page >= total_pages - 1),
         ]
         self.page.update()
 
@@ -482,196 +334,144 @@ class CianParserGUI:
             self.update_results_display()
 
     def create_result_card(self, item, index):
-        first_image = item['images'][0] if item['images'] else None
+        first_image = item['images'][0] if item.get('images') else None
+        image_container = ft.Container(
+            width=130, height=130, bgcolor=self.colors["grey_200"], border_radius=8,
+            content=ft.Image(src=first_image, fit=ft.BoxFit.COVER, error_content=ft.Icon(ft.Icons.BROKEN_IMAGE)) if first_image else
+                    ft.Icon(ft.Icons.HIDE_IMAGE, size=50)
+        )
 
-        if first_image:
-            image_container = ft.Container(
-                width=120, height=120, bgcolor=self.colors["grey_200"], border_radius=8,
-                content=ft.Image(src=first_image, width=120, height=120, fit=ft.BoxFit.COVER,
-                                 error_content=ft.Icon(ft.Icons.BROKEN_IMAGE, size=30))
-            )
-        else:
-            image_container = ft.Container(
-                width=120, height=120, bgcolor=self.colors["grey_200"], border_radius=8,
-                content=ft.Icon(ft.Icons.HIDE_IMAGE, size=30), alignment=ft.alignment.center
-            )
-
-        info_column = ft.Column([
-            ft.Text(f"{index}. {item['title']}", weight=ft.FontWeight.BOLD, size=12),
-            ft.Text(item['subtitle'], size=11, color=self.colors["grey"]),
-            ft.Text(item['price'], size=14, color=self.colors["green"], weight=ft.FontWeight.BOLD),
-            ft.Text(item['address'], size=10, color=self.colors["blue"]),
-            ft.Text(
-                item['description'][:150] + "..." if len(item['description']) > 150 else item['description'],
-                size=10, color=self.colors["grey_800"], max_lines=2
-            ),
-            ft.Text(f"📷 {len(item['images'])} фото", size=9),
+        info = ft.Column([
+            ft.Text(f"{index}. {item.get('title')}", weight=ft.FontWeight.BOLD, size=13),
+            ft.Text(item.get('subtitle', ''), size=12, color=self.colors["grey"]),
+            ft.Text(item.get('price', ''), size=15, color=self.colors["green"], weight=ft.FontWeight.BOLD),
+            ft.Text(item.get('address', ''), size=11, color=self.colors["blue"]),
         ], spacing=4, expand=True)
-
-        buttons_row = ft.Row([
-            ft.IconButton(icon=ft.Icons.LINK, tooltip="Открыть ссылку",
-                          on_click=lambda e, url=item['link']: self.page.launch_url(url), icon_size=18),
-            ft.IconButton(icon=ft.Icons.IMAGE, tooltip="Показать все фото",
-                          on_click=lambda e, images=item['images']: self.show_images_dialog(images), icon_size=18),
-        ], spacing=0)
 
         return ft.Card(
             content=ft.Container(
-                content=ft.Row([image_container, ft.Column([info_column, buttons_row], expand=True, spacing=4)],
-                               spacing=8),
-                padding=8,
+                content=ft.Row([image_container, info], spacing=12),
+                padding=10
             ),
-            margin=ft.margin.only(bottom=5),
+            margin=ft.margin.only(bottom=6)
         )
 
     def show_images_dialog(self, images):
-        if not images:
-            return
-
-        current_index = [0]
-
-        def change_image(delta):
-            current_index[0] = (current_index[0] + delta) % len(images)
-            image_display.src = images[current_index[0]]
-            self.page.update()
-
-        image_display = ft.Image(src=images[0], width=500, height=400, fit=ft.BoxFit.CONTAIN)
-
-        dialog = ft.AlertDialog(
-            title=ft.Text("Фото"),
-            content=ft.Container(
-                content=ft.Column([
-                    image_display,
-                    ft.Row([
-                        ft.IconButton(icon=ft.Icons.CHEVRON_LEFT,
-                                      on_click=lambda e: change_image(-1),
-                                      disabled=len(images) <= 1),
-                        ft.Text(f"1/{len(images)}", size=12),
-                        ft.IconButton(icon=ft.Icons.CHEVRON_RIGHT,
-                                      on_click=lambda e: change_image(1),
-                                      disabled=len(images) <= 1),
-                    ], alignment=ft.MainAxisAlignment.CENTER),
-                ], spacing=10),
-                width=600, height=500,
-            ),
-            actions=[ft.TextButton("Закрыть", on_click=lambda e: self.close_dialog(dialog))]
-        )
-
-        self.page.dialog = dialog
-        dialog.open = True
-        self.page.update()
-
-    def close_dialog(self, dialog):
-        dialog.open = False
+        if not images: return
+        dlg = ft.AlertDialog(title=ft.Text("Фото объявления"), content=ft.Image(src=images[0], width=600))
+        self.page.dialog = dlg
+        dlg.open = True
         self.page.update()
 
     def start_parsing(self, page, url, max_scrolls, max_results):
-        if self.is_parsing:
-            self.add_log("Парсинг уже выполняется!", True)
-            return
-
+        if self.is_parsing: return
         self.is_parsing = True
-        self.current_results = []
-
         self.start_button.disabled = True
         self.stop_button.disabled = False
         self.save_text_button.disabled = True
         self.save_json_button.disabled = True
         self.save_excel_button.disabled = True
-
-        self.log_area.controls.clear()
         self.results_list.controls.clear()
-        self.update_progress("Запуск парсера...", 0)
 
-        self.parsing_thread = threading.Thread(
-            target=self.run_parser,
-            args=(url, max_scrolls, max_results),
-            daemon=True
-        )
-        self.parsing_thread.start()
+        threading.Thread(target=self.run_parser, args=(url, max_scrolls, max_results), daemon=True).start()
 
     def run_parser(self, url, max_scrolls, max_results):
         try:
-            self.add_log(f"Инициализация парсера...")
-            self.add_log(f"URL: {url}")
-            self.add_log(f"Макс. прокруток: {max_scrolls}")
-            self.add_log(f"Макс. объявлений: {max_results}")
-
             self.parser = CianParser(headless=False, max_scrolls=max_scrolls, max_results=max_results)
+            def cb(msg, prog):
+                self.update_progress(msg, prog)
+                self.add_log(msg)
 
-            def progress_callback(message, progress):
-                self.update_progress(message, progress)
-                self.add_log(message)
-
-            results = self.parser.parse(url, progress_callback)
+            results = self.parser.parse(url, cb)
             self.current_results = results
             self.filtered_results = results.copy()
 
             if results:
-                self.add_log(f"✓ Парсинг завершён! Найдено: {len(results)} объявлений")
-                self.update_progress(f"Готово! Найдено {len(results)} объявлений", 100)
                 self.update_results_display()
-
                 self.save_text_button.disabled = False
                 self.save_json_button.disabled = False
                 self.save_excel_button.disabled = False
+                self.add_log(f"Парсинг завершён — найдено {len(results)} объявлений")
             else:
-                self.add_log("Не найдено ни одного объявления", True)
-
+                self.add_log("Объявления не найдены", True)
         except Exception as e:
             self.add_log(f"Ошибка: {e}", True)
-            self.update_progress(f"Ошибка: {e}", -1)
         finally:
-            if self.parser:
-                self.parser.close()
+            if self.parser: self.parser.close()
             self.is_parsing = False
             self.start_button.disabled = False
             self.stop_button.disabled = True
             self.page.update()
 
     def stop_parsing(self, e):
-        if self.is_parsing:
-            self.is_parsing = False
-            if self.parser:
-                self.parser.close()
-            self.add_log("Парсинг остановлен пользователем")
-            self.update_progress("Парсинг остановлен", -1)
-            self.start_button.disabled = False
-            self.stop_button.disabled = True
-            self.page.update()
+        if self.parser: self.parser.close()
+        self.is_parsing = False
+        self.start_button.disabled = False
+        self.stop_button.disabled = True
+        self.add_log("Парсинг остановлен")
 
-    def save_results(self, format_type):
-        if not self.current_results:
-            self.add_log("Нет результатов для сохранения", True)
+    def start_monitoring(self, e):
+        if self.monitor.is_monitoring:
+            self.add_log("Мониторинг уже работает", True)
+            return
+
+        email_settings = {
+            'to': self.monitor_email.value.strip(),
+            'from': self.monitor_from_email.value.strip(),
+            'password': self.monitor_password.value.strip()
+        }
+
+        if not email_settings['to'] or not email_settings['from'] or not email_settings['password']:
+            self.add_log(" Заполните данные почты", True)
             return
 
         try:
+            interval_sec = int(self.monitor_interval.value) * 60
+
+            self.monitor_start_btn.disabled = True
+            self.monitor_stop_btn.disabled = False
+            self.page.update()
+
+            def progress_cb(msg, prog):
+                self.update_progress(msg, prog)
+                self.add_log(msg)
+
+            threading.Thread(
+                target=self.monitor.start,
+                args=(self.url_field.value, interval_sec, 30, email_settings,
+                      self.notify_always_checkbox.value, progress_cb),
+                daemon=True
+            ).start()
+
+            self.add_log(f" Мониторинг запущен каждые {self.monitor_interval.value} минут")
+        except Exception as ex:
+            self.add_log(f"Ошибка запуска мониторинга: {ex}", True)
+
+    def stop_monitoring(self, e):
+        self.monitor.stop()
+        self.monitor_start_btn.disabled = False
+        self.monitor_stop_btn.disabled = True
+        self.add_log("Мониторинг остановлен")
+        self.page.update()
+
+    def save_results(self, format_type):
+        if not self.current_results:
+            self.add_log("Нет данных для сохранения", True)
+            return
+        try:
             if format_type == "txt":
                 filename = self.parser.save_to_text(self.current_results)
-                self.add_log(f" Сохранено в TXT: {filename}")
-
             elif format_type == "json":
                 filename = self.parser.save_to_json(self.current_results)
-                self.add_log(f" Сохранено в JSON: {filename}")
-
             elif format_type == "excel":
-                from excel_exporter import export_results_to_excel
-                prefix = self.excel_prefix_field.value.strip()
-                include_dt = self.include_datetime_checkbox.value
-
                 filename = export_results_to_excel(
                     self.current_results,
-                    prefix=prefix if prefix else "Cian_parser",
-                    include_datetime=include_dt
+                    self.excel_prefix_field.value.strip() or "Cian_parser",
+                    self.include_datetime_checkbox.value
                 )
-
-                if filename:
-                    self.add_log(f" Сохранено в Excel: {filename}")
-                else:
-                    self.add_log(" Ошибка при сохранении Excel", True)
-
+            self.add_log(f" Сохранено: {filename}")
         except Exception as e:
-            self.add_log(f"Ошибка при сохранении: {e}", True)
+            self.add_log(f"Ошибка сохранения: {e}", True)
 
 
 def main():
